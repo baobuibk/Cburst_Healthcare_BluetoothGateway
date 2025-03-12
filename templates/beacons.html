@@ -1,84 +1,56 @@
 {% extends "base.html" %}
+{% block title %}Beacons{% endblock %}
 {% block content %}
-<h1>Beacon Management</h1>
-<div class="filter">
-    <input type="text" id="filter-id" placeholder="Filter by ID">
-    <select id="filter-gateway">
+    <h1>Beacons</h1>
+    <input type="text" id="idFilter" placeholder="Filter by ID" onkeyup="fetchBeacons()">
+    <select id="gatewayFilter" onchange="fetchBeacons()">
         <option value="">All Gateways</option>
         <option value="GW1">GW1</option>
         <option value="GW2">GW2</option>
         <option value="GW3">GW3</option>
     </select>
-    <select id="filter-detected">
-        <option value="">All</option>
-        <option value="1">Detected</option>
-        <option value="0">Not Detected</option>
-    </select>
-    <button onclick="filterBeacons()">Search</button>
-</div>
-<table id="beacon-table">
-    <tr>
-        <th>ID</th>
-        <th>Gateway</th>
-        <th>RSSI</th>
-        <th>Status</th>
-        <th>Last Seen</th>
-    </tr>
-</table>
-<div class="charts">
-    <h2>RSSI of Beacons</h2>
-    <canvas id="rssiChart" width="400" height="200"></canvas>
-</div>
-{% endblock %}
-{% block scripts %}
-<script>
-    var rssiChart;
-    window.onload = function() {
-        rssiChart = new Chart(document.getElementById('rssiChart').getContext('2d'), {
+    <table id="beaconTable">
+        <thead>
+            <tr><th>ID</th><th>Gateway</th><th>RSSI</th><th>Last Seen</th><th>Detected</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+    <canvas id="rssiChart"></canvas>
+    <script>
+        const ctx = document.getElementById('rssiChart').getContext('2d');
+        const chart = new Chart(ctx, {
             type: 'line',
-            data: { labels: [], datasets: [] },
+            data: { labels: [], datasets: [{ label: 'RSSI', data: [], borderColor: '#3498db', fill: false }] },
             options: { scales: { y: { beginAtZero: false } } }
         });
-    };
 
-    function updateBeacons(params = {}) {
-        const url = new URL('/api/beacons', window.location.origin);
-        Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
-        fetch(url)
-            .then(response => response.json())
-            .then(beacons => {
-                const table = document.getElementById('beacon-table');
-                table.innerHTML = '<tr><th>ID</th><th>Gateway</th><th>RSSI</th><th>Status</th><th>Last Seen</th></tr>';
-                for (const [id, info] of Object.entries(beacons)) {
-                    const row = table.insertRow();
-                    row.innerHTML = `
-                        <td>${id}</td>
-                        <td>${info.gateway}</td>
-                        <td>${info.rssi}</td>
-                        <td>${info.detected ? 'Detected' : 'Not Detected'}</td>
-                        <td>${info.last_seen}</td>
-                    `;
-                }
+        function fetchBeacons() {
+            const idFilter = document.getElementById('idFilter').value;
+            const gatewayFilter = document.getElementById('gatewayFilter').value;
+            fetch(`/api/beacons?id=${idFilter}&gateway=${gatewayFilter}`)
+                .then(response => response.json())
+                .then(data => {
+                    const tbody = document.querySelector('#beaconTable tbody');
+                    tbody.innerHTML = '';
+                    chart.data.labels = [];
+                    chart.data.datasets[0].data = [];
+                    for (const [id, beacon] of Object.entries(data)) {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td>${id}</td>
+                            <td>${beacon.gateway}</td>
+                            <td>${beacon.rssi}</td>
+                            <td>${beacon.last_seen}</td>
+                            <td>${beacon.detected ? 'Yes' : 'No'}</td>
+                        `;
+                        tbody.appendChild(tr);
+                        chart.data.labels.push(id);
+                        chart.data.datasets[0].data.push(beacon.rssi);
+                    }
+                    chart.update();
+                });
+        }
 
-                rssiChart.data.labels = Object.keys(beacons);
-                rssiChart.data.datasets = [{
-                    label: 'RSSI',
-                    data: Object.values(beacons).map(b => b.rssi),
-                    borderColor: 'red',
-                    fill: false
-                }];
-                rssiChart.update();
-            });
-    }
-    function filterBeacons() {
-        const params = {
-            id: document.getElementById('filter-id').value,
-            gateway: document.getElementById('filter-gateway').value,
-            detected: document.getElementById('filter-detected').value
-        };
-        updateBeacons(params);
-    }
-    updateBeacons();
-    setInterval(() => updateBeacons(), 5000);
-</script>
+        fetchBeacons();
+    </script>
 {% endblock %}

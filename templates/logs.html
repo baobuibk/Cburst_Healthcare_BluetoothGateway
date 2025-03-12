@@ -1,80 +1,40 @@
 {% extends "base.html" %}
+{% block title %}Logs{% endblock %}
 {% block content %}
-<h1>Monitoring & Logs</h1>
-<div class="filter">
-    <input type="text" id="filter-time" placeholder="Filter by Time (e.g., 10:00)">
-    <select id="filter-service">
+    <h1>System Logs</h1>
+    <input type="text" id="timeFilter" placeholder="Filter by Time" onkeyup="fetchLogs()">
+    <select id="serviceFilter" onchange="fetchLogs()">
         <option value="">All Services</option>
         <option value="Listener">Listener</option>
         <option value="Processor">Processor</option>
-        <option value="Publisher">Publisher</option>
     </select>
-    <button onclick="filterLogs()">Search</button>
-</div>
-<table id="log-table">
-    <tr>
-        <th>Time</th>
-        <th>Service</th>
-        <th>Message</th>
-    </tr>
-</table>
-<div class="stats">
-    <h2>Performance</h2>
-    <p>Avg Processing Time: <span id="processing_time"></span></p>
-    <p>End-to-End Latency: <span id="latency"></span></p>
-    <canvas id="latencyChart" width="400" height="200"></canvas>
-</div>
-{% endblock %}
-{% block scripts %}
-<script>
-    var latencyChart;
-    var latencyData = { labels: [], datasets: [{ label: 'Latency (ms)', data: [], borderColor: 'purple', fill: false }] };
-
-    window.onload = function() {
-        latencyChart = new Chart(document.getElementById('latencyChart').getContext('2d'), {
-            type: 'line',
-            data: latencyData,
-            options: { scales: { y: { beginAtZero: true } } }
-        });
-    };
-
-    function updateLogs(params = {}) {
-        const url = new URL('/api/logs', window.location.origin);
-        Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
-        fetch(url)
-            .then(response => response.json())
-            .then(data => {
-                const table = document.getElementById('log-table');
-                table.innerHTML = '<tr><th>Time</th><th>Service</th><th>Message</th></tr>';
-                data.logs.forEach(log => {
-                    const row = table.insertRow();
-                    row.innerHTML = `
-                        <td>${log.time}</td>
-                        <td>${log.service}</td>
-                        <td>${log.message}</td>
-                    `;
+    <table id="logTable">
+        <thead>
+            <tr><th>Time</th><th>Service</th><th>Message</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+    <script>
+        function fetchLogs() {
+            const timeFilter = document.getElementById('timeFilter').value;
+            const serviceFilter = document.getElementById('serviceFilter').value;
+            fetch(`/api/logs?time=${timeFilter}&service=${serviceFilter}`)
+                .then(response => response.json())
+                .then(data => {
+                    const tbody = document.querySelector('#logTable tbody');
+                    tbody.innerHTML = '';
+                    data.logs.forEach(log => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td>${log.time}</td>
+                            <td>${log.service}</td>
+                            <td>${log.message}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
                 });
-                document.getElementById('processing_time').innerText = data.stats.processing_time;
-                document.getElementById('latency').innerText = data.stats.latency;
+        }
 
-                const now = new Date().toLocaleTimeString();
-                latencyData.labels.push(now);
-                latencyData.datasets[0].data.push(parseInt(data.stats.latency));
-                if (latencyData.labels.length > 20) {
-                    latencyData.labels.shift();
-                    latencyData.datasets[0].data.shift();
-                }
-                latencyChart.update();
-            });
-    }
-    function filterLogs() {
-        const params = {
-            time: document.getElementById('filter-time').value,
-            service: document.getElementById('filter-service').value
-        };
-        updateLogs(params);
-    }
-    updateLogs();
-    setInterval(() => updateLogs(), 5000);
-</script>
+        fetchLogs();
+    </script>
 {% endblock %}
