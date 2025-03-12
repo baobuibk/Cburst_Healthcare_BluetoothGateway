@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Gateway Management</h1>
+<div class="filter">
+    <input type="text" id="filter-id" placeholder="Filter by ID">
+    <select id="filter-status">
+        <option value="">All</option>
+        <option value="Online">Online</option>
+        <option value="Offline">Offline</option>
+    </select>
+    <button onclick="filterGateways()">Search</button>
+</div>
+<table id="gateway-table">
+    <tr>
+        <th>ID</th>
+        <th>IP</th>
+        <th>Status</th>
+        <th>Beacons</th>
+        <th>Actions</th>
+    </tr>
+</table>
+<div class="charts">
+    <h2>Beacons per Gateway</h2>
+    <canvas id="gatewayChart" width="400" height="200"></canvas>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+    var gatewayChart;
+    window.onload = function() {
+        gatewayChart = new Chart(document.getElementById('gatewayChart').getContext('2d'), {
+            type: 'bar',
+            data: { labels: [], datasets: [{ label: 'Beacons', data: [], backgroundColor: 'rgba(54, 162, 235, 0.5)' }] },
+            options: { scales: { y: { beginAtZero: true } } }
+        });
+    };
+
+    function updateGateways(params = {}) {
+        const url = new URL('/api/gateways', window.location.origin);
+        Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
+        fetch(url)
+            .then(response => response.json())
+            .then(gateways => {
+                const table = document.getElementById('gateway-table');
+                table.innerHTML = '<tr><th>ID</th><th>IP</th><th>Status</th><th>Beacons</th><th>Actions</th></tr>';
+                gateways.forEach(gw => {
+                    const row = table.insertRow();
+                    row.innerHTML = `
+                        <td>${gw.id}</td>
+                        <td>${gw.ip}</td>
+                        <td>${gw.status}</td>
+                        <td>${gw.beacons}</td>
+                        <td>
+                            <button onclick="controlGateway('${gw.id}', '${gw.status === 'Online' ? 'off' : 'on'}')">
+                                ${gw.status === 'Online' ? 'Off' : 'On'}
+                            </button>
+                        </td>
+                    `;
+                });
+
+                gatewayChart.data.labels = gateways.map(gw => gw.id);
+                gatewayChart.data.datasets[0].data = gateways.map(gw => gw.beacons);
+                gatewayChart.update();
+            });
+    }
+    function controlGateway(id, action) {
+        fetch(`/api/gateways/control/${id}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action: action})
+        }).then(() => updateGateways());
+    }
+    function filterGateways() {
+        const params = {
+            id: document.getElementById('filter-id').value,
+            status: document.getElementById('filter-status').value
+        };
+        updateGateways(params);
+    }
+    updateGateways();
+    setInterval(() => updateGateways(), 5000);
+</script>
+{% endblock %}

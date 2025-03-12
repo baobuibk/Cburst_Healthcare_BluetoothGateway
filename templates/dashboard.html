@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Beacon System Dashboard</h1>
+<div class="status">
+    <p>Gateways: <span id="gateways"></span></p>
+    <p>Beacons Detected: <span id="beacons_detected"></span></p>
+    <p>Broker: <span id="broker"></span></p>
+    <p>Redis: <span id="redis"></span></p>
+    <p>Listener: <span id="listener"></span></p>
+    <p>Processor: <span id="processor"></span></p>
+    <p>Publisher: <span id="publisher"></span></p>
+</div>
+<div class="charts">
+    <h2>Messages/Second</h2>
+    <canvas id="msgChart" width="400" height="200"></canvas>
+    <h2>AWS Updates/Second</h2>
+    <canvas id="awsChart" width="400" height="200"></canvas>
+</div>
+<div class="alerts">
+    <h2>Alerts</h2>
+    <ul id="alerts"></ul>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+    var msgChart, awsChart;
+    var msgData = { labels: [], datasets: [{ label: 'Messages/Second', data: [], borderColor: 'blue', fill: false }] };
+    var awsData = { labels: [], datasets: [{ label: 'AWS Updates/Second', data: [], borderColor: 'green', fill: false }] };
+
+    window.onload = function() {
+        msgChart = new Chart(document.getElementById('msgChart').getContext('2d'), {
+            type: 'line',
+            data: msgData,
+            options: { scales: { y: { beginAtZero: true } } }
+        });
+        awsChart = new Chart(document.getElementById('awsChart').getContext('2d'), {
+            type: 'line',
+            data: awsData,
+            options: { scales: { y: { beginAtZero: true } } }
+        });
+    };
+
+    socket.on('update_dashboard', function(data) {
+        document.getElementById('gateways').innerText = `${data.status.gateways_online}/${data.status.gateways} Online`;
+        document.getElementById('beacons_detected').innerText = data.status.beacons_detected;
+        document.getElementById('broker').innerText = data.status.broker;
+        document.getElementById('redis').innerText = data.status.redis;
+        document.getElementById('listener').innerText = data.status.listener;
+        document.getElementById('processor').innerText = data.status.processor;
+        document.getElementById('publisher').innerText = data.status.publisher;
+
+        const now = new Date().toLocaleTimeString();
+        msgData.labels.push(now); msgData.datasets[0].data.push(data.msg_rate);
+        awsData.labels.push(now); awsData.datasets[0].data.push(data.aws_rate);
+        if (msgData.labels.length > 20) {
+            msgData.labels.shift(); msgData.datasets[0].data.shift();
+            awsData.labels.shift(); awsData.datasets[0].data.shift();
+        }
+        msgChart.update();
+        awsChart.update();
+
+        const alerts = document.getElementById('alerts');
+        alerts.innerHTML = '';
+        data.status.alerts.forEach(alert => {
+            const li = document.createElement('li');
+            li.innerText = alert;
+            alerts.appendChild(li);
+        });
+    });
+
+    fetch('/api/dashboard')
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('gateways').innerText = `${data.status.gateways_online}/${data.status.gateways} Online`;
+            document.getElementById('beacons_detected').innerText = data.status.beacons_detected;
+        });
+</script>
+{% endblock %}
