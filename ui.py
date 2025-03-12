@@ -160,7 +160,25 @@ def api_control_gateway(gateway_id):
 @login_required
 def gateways_list():
     return render_template('gateways.html')
+@app.route('/api/beacons/<beacon_id>', methods=['DELETE'])
+@login_required
+def delete_beacon(beacon_id):
+    # Logic xóa Beacon (ví dụ: xóa khỏi beacon_state)
+    redis_client.hdel("beacon_state", beacon_id)
+    return jsonify({"success": True, "message": f"Deleted {beacon_id}"})
 
+@app.route('/api/beacons/<beacon_id>', methods=['PUT'])
+@login_required
+def edit_beacon(beacon_id):
+    data = request.json
+    # Logic chỉnh sửa (ví dụ: cập nhật gateway)
+    current_state = redis_client.hget("beacon_state", beacon_id)
+    if current_state:
+        state = json.loads(current_state.decode())
+        state["gateway"] = data.get("gateway", state["gateway"])
+        redis_client.hset("beacon_state", beacon_id, json.dumps(state))
+        return jsonify({"success": True, "message": f"Updated {beacon_id}"})
+    return jsonify({"success": False, "error": "Beacon not found"}), 404
 @app.route('/api/beacons', methods=['GET'])
 @login_required
 def api_beacons():

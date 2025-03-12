@@ -1,56 +1,72 @@
 {% extends "base.html" %}
 {% block title %}Beacons{% endblock %}
 {% block content %}
-    <h1>Beacons</h1>
-    <input type="text" id="idFilter" placeholder="Filter by ID" onkeyup="fetchBeacons()">
-    <select id="gatewayFilter" onchange="fetchBeacons()">
-        <option value="">All Gateways</option>
-        <option value="GW1">GW1</option>
-        <option value="GW2">GW2</option>
-        <option value="GW3">GW3</option>
-    </select>
+    <h1>Found Beacons</h1>
+    <div style="display: flex; justify-content: flex-end; margin-bottom: 1rem;">
+        <button onclick="fetchBeacons()" style="background-color: #e74c3c; color: white; border: none; border-radius: 50%; width: 40px; height: 40px; font-size: 1.2rem; cursor: pointer;">
+            &#8635;
+        </button>
+    </div>
     <table id="beaconTable">
         <thead>
-            <tr><th>ID</th><th>Gateway</th><th>RSSI</th><th>Last Seen</th><th>Detected</th></tr>
+            <tr>
+                <th>Beacon ID</th>
+                <th>Current Location</th>
+                <th>Last Seen</th>
+                <th>Edit</th>
+                <th>Delete</th>
+            </tr>
         </thead>
         <tbody></tbody>
     </table>
-    <canvas id="rssiChart"></canvas>
     <script>
-        const ctx = document.getElementById('rssiChart').getContext('2d');
-        const chart = new Chart(ctx, {
-            type: 'line',
-            data: { labels: [], datasets: [{ label: 'RSSI', data: [], borderColor: '#3498db', fill: false }] },
-            options: { scales: { y: { beginAtZero: false } } }
-        });
-
         function fetchBeacons() {
-            const idFilter = document.getElementById('idFilter').value;
-            const gatewayFilter = document.getElementById('gatewayFilter').value;
-            fetch(`/api/beacons?id=${idFilter}&gateway=${gatewayFilter}`)
+            fetch('/api/beacons')
                 .then(response => response.json())
                 .then(data => {
                     const tbody = document.querySelector('#beaconTable tbody');
                     tbody.innerHTML = '';
-                    chart.data.labels = [];
-                    chart.data.datasets[0].data = [];
-                    for (const [id, beacon] of Object.entries(data)) {
+                    for (const [beaconId, beacon] of Object.entries(data)) {
                         const tr = document.createElement('tr');
+                        const lastSeenRelative = calculateRelativeTime(beacon.last_seen);
                         tr.innerHTML = `
-                            <td>${id}</td>
+                            <td>${beaconId}</td>
                             <td>${beacon.gateway}</td>
-                            <td>${beacon.rssi}</td>
-                            <td>${beacon.last_seen}</td>
-                            <td>${beacon.detected ? 'Yes' : 'No'}</td>
+                            <td>${lastSeenRelative}</td>
+                            <td><button class="edit-btn" onclick="editBeacon('${beaconId}')">Edit this beacon</button></td>
+                            <td><button class="delete-btn" onclick="deleteBeacon('${beaconId}')">Delete this beacon</button></td>
                         `;
                         tbody.appendChild(tr);
-                        chart.data.labels.push(id);
-                        chart.data.datasets[0].data.push(beacon.rssi);
                     }
-                    chart.update();
                 });
         }
 
-        fetchBeacons();
+        function calculateRelativeTime(timestamp) {
+            const now = new Date();
+            const then = new Date(timestamp);
+            const diffMs = now - then;
+            const diffSeconds = Math.floor(diffMs / 1000);
+            if (diffSeconds < 60) return 'a few seconds ago';
+            const diffMinutes = Math.floor(diffSeconds / 60);
+            if (diffMinutes < 60) return `${diffMinutes} minute${diffMinutes > 1 ? 's' : ''} ago`;
+            const diffHours = Math.floor(diffMinutes / 60);
+            return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+        }
+
+        function editBeacon(beaconId) {
+            alert(`Editing ${beaconId} (Functionality to be implemented)`);
+            // Thêm logic chỉnh sửa nếu cần (ví dụ: mở form popup)
+        }
+
+        function deleteBeacon(beaconId) {
+            if (confirm(`Are you sure you want to delete ${beaconId}?`)) {
+                // Thêm logic xóa Beacon (ví dụ: gọi API DELETE nếu có)
+                alert(`Deleted ${beaconId} (Functionality to be implemented)`);
+                fetchBeacons(); // Làm mới danh sách
+            }
+        }
+
+        // Gọi hàm khi trang tải
+        window.onload = fetchBeacons;
     </script>
 {% endblock %}
