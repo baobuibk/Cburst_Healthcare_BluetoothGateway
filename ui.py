@@ -10,6 +10,7 @@ import time
 import threading
 from functools import wraps
 import hashlib
+from datetime import datetime
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "your-secret-key")
@@ -26,18 +27,49 @@ mqtt_client = mqtt.Client()
 mqtt_client.connect(BROKER_HOST, BROKER_PORT, 60)
 mqtt_client.loop_start()
 
-gateways = [
-    {"id": "GW1", "ip": "192.168.1.1", "status": "Online", "beacons": 0},
-    {"id": "GW2", "ip": "192.168.1.2", "status": "Online", "beacons": 0},
-    {"id": "GW3", "ip": "192.168.1.3", "status": "Offline", "beacons": 0}
-]
-
+#-------------------------------------------------------------------------------------
+# PUBLIC VARIABLES
+#-------------------------------------------------------------------------------------
+gateways = []
+#-------------------------------------------------------------------------------------
+# PUBLIC FUNCTIONS
+#-------------------------------------------------------------------------------------
 def init_users():
     if not redis_client.exists("users"):
         redis_client.hset("users", "admin", hashlib.md5("admin123".encode()).hexdigest())
 
-init_users()
+def update_realtime_data():
+    while True:
+        msg_rate = redis_client.llen("beacon_data")
+        aws_rate = redis_client.llen("aws_queue")
+        beacons_detected = len(redis_client.hkeys("beacon_state") or [])
+        system_status = {
+            "gateways": len(gateways),
+            "gateways_online": sum(1 for gw in gateways if gw["status"] == "Online"),
+            "beacons_detected": beacons_detected,
+            "broker": "Online" if mqtt_client.is_connected() else "Offline",
+            "redis": "Online" if redis_client.ping() else "Offline",
+            "listener": "Running",
+            "processor": "Running",
+            "publisher": "Running",
+            "alerts": ["GW3 offline for 5 minutes"] if any(gw["status"] == "Offline" for gw in gateways) else []
+        }
+        socketio.emit('update_dashboard', {
+            'status': system_status,
+            'msg_rate': msg_rate,
+            'aws_rate': aws_rate
+        })
+        time.sleep(1)
 
+#-------------------------------------------------------------------------------------
+# INIT SERVER
+#-------------------------------------------------------------------------------------
+init_users()
+threading.Thread(target=update_realtime_data, daemon=True).start()
+
+#-------------------------------------------------------------------------------------
+# API FOR AUTHENTICATE SERVER
+#-------------------------------------------------------------------------------------
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -77,31 +109,9 @@ def logout():
     session.pop('username', None)
     return redirect(url_for('login'))
 
-def update_realtime_data():
-    while True:
-        msg_rate = redis_client.llen("beacon_data")
-        aws_rate = redis_client.llen("aws_queue")
-        beacons_detected = len(redis_client.hkeys("beacon_state") or [])
-        system_status = {
-            "gateways": len(gateways),
-            "gateways_online": sum(1 for gw in gateways if gw["status"] == "Online"),
-            "beacons_detected": beacons_detected,
-            "broker": "Online" if mqtt_client.is_connected() else "Offline",
-            "redis": "Online" if redis_client.ping() else "Offline",
-            "listener": "Running",
-            "processor": "Running",
-            "publisher": "Running",
-            "alerts": ["GW3 offline for 5 minutes"] if any(gw["status"] == "Offline" for gw in gateways) else []
-        }
-        socketio.emit('update_dashboard', {
-            'status': system_status,
-            'msg_rate': msg_rate,
-            'aws_rate': aws_rate
-        })
-        time.sleep(1)
-
-threading.Thread(target=update_realtime_data, daemon=True).start()
-
+#-------------------------------------------------------------------------------------
+# API FOR PROCESSING DASHBOARD
+#-------------------------------------------------------------------------------------
 @app.route('/api/dashboard', methods=['GET'])
 @login_required
 def api_dashboard():
@@ -130,45 +140,81 @@ def api_dashboard():
 def dashboard():
     return render_template('dashboard.html')
 
+#-------------------------------------------------------------------------------------
+# API FOR PROCESSING GATEWAY
+#-------------------------------------------------------------------------------------
 @app.route('/api/gateways', methods=['GET'])
-@login_required
 def api_gateways():
-    status_filter = request.args.get('status')
-    id_filter = request.args.get('id', '').lower()
-    filtered_gateways = gateways
-    if status_filter:
-        filtered_gateways = [gw for gw in filtered_gateways if gw["status"] == status_filter]
-    if id_filter:
-        filtered_gateways = [gw for gw in filtered_gateways if id_filter in gw["id"].lower()]
-    for gw in filtered_gateways:
-        gw["beacons"] = sum(1 for state in redis_client.hvals("beacon_state") 
-                           if json.loads(state.decode())["gateway"] == gw["id"])
-    return jsonify(filtered_gateways)
+    global gateways
+    gateways = []  # Reset the global list
 
-@app.route('/api/gateways/control/<gateway_id>', methods=['POST'])
-@login_required
-def api_control_gateway(gateway_id):
-    action = request.json.get('action')
-    for gw in gateways:
-        if gw["id"] == gateway_id:
-            gw["status"] = "Online" if action == "on" else "Offline"
-            mqtt_client.publish(f"control/{gateway_id}", json.dumps({"action": action}))
-            return jsonify({"success": True, "gateway": gw})
-    return jsonify({"success": False, "error": "Gateway not found"}), 404
+    current_time = time.time()  # Get current time
+    offline_threshold = 30 
+
+    # Track beacons per gateway
+    gateway_beacon_counts = defaultdict(int)
+
+    for key, value in redis_client.hgetall("beacon_state").items():
+        beacon_data = json.loads(value.decode())
+
+        # Handle missing "gateways" key
+        detected_gateways = beacon_data.get("gateways", [])  # Default to an empty list if missing
+
+        for gw in detected_gateways:
+            gateway_beacon_counts[gw] += 1
+
+    # Retrieve gateway info
+    for key, value in redis_client.hgetall("gateway_status").items():
+        gateway_id = key.decode()
+        data = json.loads(value.decode())
+
+        total_beacons = gateway_beacon_counts.get(gateway_id, 0)
+
+        last_seen = data.get("last_seen", 0)
+        gateway_status = "Offline" if (current_time - last_seen) > offline_threshold else "Online"
+
+        gateways.append({
+            "id": gateway_id,
+            "ip": data.get("ip", "Unknown"),
+            "status": gateway_status,
+            "last_seen": last_seen,
+            "beacons": total_beacons  # Now includes beacons from multiple gateways
+        })
+
+    return jsonify(gateways)
+
+
 
 @app.route('/gateways')
 @login_required
 def gateways_list():
     return render_template('gateways.html')
+
+#-------------------------------------------------------------------------------------
+# API FOR PROCESSING BEACONS
+#-------------------------------------------------------------------------------------    
 @app.route('/api/beacons/<beacon_id>', methods=['DELETE'])
-@login_required
+# @login_required
 def delete_beacon(beacon_id):
-    # Logic xóa Beacon (ví dụ: xóa khỏi beacon_state)
-    redis_client.hdel("beacon_state", beacon_id)
-    return jsonify({"success": True, "message": f"Deleted {beacon_id}"})
+
+    deleted = redis_client.hdel("beacon_state", beacon_id)
+
+    new_queue = []
+    for log in redis_client.lrange("aws_queue", 0, -1):
+        log_data = json.loads(log.decode())
+        if log_data.get("beacon_id") != beacon_id:
+            new_queue.append(log)
+
+    redis_client.delete("aws_queue")  # Clear old queue
+    for log in new_queue:
+        redis_client.rpush("aws_queue", log)  # Re-add logs without deleted beacon
+    
+    if deleted:
+        return jsonify({"success": True, "message": f"Deleted beacon {beacon_id}"})
+    return jsonify({"success": False, "message": "Beacon not found"}), 404
 
 @app.route('/api/beacons/<beacon_id>', methods=['PUT'])
-@login_required
+# @login_required
 def edit_beacon(beacon_id):
     data = request.json
     # Logic chỉnh sửa (ví dụ: cập nhật gateway)
@@ -179,38 +225,105 @@ def edit_beacon(beacon_id):
         redis_client.hset("beacon_state", beacon_id, json.dumps(state))
         return jsonify({"success": True, "message": f"Updated {beacon_id}"})
     return jsonify({"success": False, "error": "Beacon not found"}), 404
+
+#--------------------------------------------------
+# Receive data of beacons and show in UI (Beacons)
+#--------------------------------------------------
 @app.route('/api/beacons', methods=['GET'])
 @login_required
 def api_beacons():
-    gateway_filter = request.args.get('gateway')
-    detected_filter = request.args.get('detected')
-    id_filter = request.args.get('id', '').lower()
+
     beacons = {}
-    for data in redis_client.lrange("beacon_data", -100, -1):
-        d = json.loads(data.decode())
-        beacon_id = d["beacon_id"]
-        detected = 1 if redis_client.hexists("beacon_state", beacon_id) else 0
-        beacons[beacon_id] = {
-            "gateway": d["gateway_id"],
-            "rssi": d["rssi"],
-            "last_seen": d["timestamp"],
-            "detected": detected
-        }
-    filtered_beacons = beacons
-    if gateway_filter:
-        filtered_beacons = {k: v for k, v in filtered_beacons.items() if v["gateway"] == gateway_filter}
-    if detected_filter is not None:
-        detected_filter = int(detected_filter)
-        filtered_beacons = {k: v for k, v in filtered_beacons.items() if v["detected"] == detected_filter}
-    if id_filter:
-        filtered_beacons = {k: v for k, v in filtered_beacons.items() if id_filter in k.lower()}
-    return jsonify(filtered_beacons)
+
+    # Fetch all detected beacons from `beacon_state`
+    for beacon_id in redis_client.hkeys("beacon_state"):
+        beacon_id = beacon_id.decode()
+        beacon_data = redis_client.hget("beacon_state", beacon_id)
+        if beacon_data:
+            beacon_info = json.loads(beacon_data.decode())
+
+            detected_gateways = beacon_info.get("gateways", [])
+            rssi_scores = beacon_info.get("rssi_scores", {})
+            timestamp = beacon_info.get("timestamp", None)  # Get timestamp
+
+            # Convert timestamp to Unix time (seconds) if needed
+            if isinstance(timestamp, str):
+                try:
+                    dt = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
+                    timestamp = int(time.mktime(dt.timetuple()))
+                except ValueError:
+                    timestamp = None  # Handle invalid timestamps
+
+            elif isinstance(timestamp, int) and len(str(timestamp)) > 10:
+                timestamp = int(str(timestamp)[:10])  # Trim to 10 digits (seconds)
+
+            # Convert timestamp to Vietnam Time (UTC+7) manually
+            if timestamp:
+                timestamp += 7 * 3600  # Add 7 hours (7 * 3600 seconds)
+                vietnam_time = datetime.utcfromtimestamp(timestamp)
+                formatted_time = vietnam_time.strftime("%Y-%m-%d %H:%M:%S")  # Store as string
+            else:
+                formatted_time = "N/A"
+
+            # Ensure the beacon is still detected
+            detected = 1 if detected_gateways else 0  
+
+            beacons[beacon_id] = {
+                "gateways": detected_gateways,  
+                "rssi_scores": rssi_scores,  
+                "last_seen": formatted_time,
+                "detected": detected
+            }
+
+    return jsonify(beacons)
+
+@app.route('/api/beacon_logs', methods=['GET'])
+def api_beacon_logs():
+    logs = []
+    for log in redis_client.lrange("aws_queue", -20, -1):
+        log_data = json.loads(log.decode())
+
+        timestamp = log_data.get("timestamp", None)
+
+        # Convert timestamp to Unix time (seconds) if needed
+        if isinstance(timestamp, str):
+            try:
+                dt = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
+                timestamp = int(time.mktime(dt.timetuple()))
+            except ValueError:
+                timestamp = None  # Handle invalid timestamps
+
+        elif isinstance(timestamp, int) and len(str(timestamp)) > 10:
+            timestamp = int(str(timestamp)[:10])  # Trim to 10 digits (seconds)
+
+        # Convert timestamp to Vietnam Time (UTC+7) manually
+        if timestamp:
+            timestamp += 7 * 3600  # Add 7 hours (7 * 3600 seconds)
+            vietnam_time = datetime.utcfromtimestamp(timestamp)
+            log_data["timestamp"] = vietnam_time.strftime("%Y-%m-%d %H:%M:%S")  # Store as string
+        else:
+            log_data["timestamp"] = "N/A"
+
+        logs.append(log_data)
+
+    # Sort logs by timestamp (newest first)
+    logs.sort(key=lambda x: datetime.strptime(x["timestamp"], "%Y-%m-%d %H:%M:%S") if x["timestamp"] != "N/A" else datetime.min, reverse=True)
+
+    return jsonify(logs)
+
+@app.route('/api/clear_beacon_logs', methods=['DELETE'])
+def clear_beacon_logs():
+    redis_client.delete("aws_queue")  # Delete the Redis list storing logs
+    return jsonify({"success": True, "message": "All beacon logs deleted."})
 
 @app.route('/beacons')
 @login_required
 def beacons_list():
     return render_template('beacons.html')
 
+#-------------------------------------------------------------------------------------
+# API FOR CONFIGURATION SERVER
+#-------------------------------------------------------------------------------------
 @app.route('/api/config', methods=['GET', 'POST'])
 @login_required
 def api_config():
@@ -234,6 +347,9 @@ def api_config():
 def config():
     return render_template('config.html')
 
+#-------------------------------------------------------------------------------------
+# API FOR SHOW LOGS OF SYSTEM
+#-------------------------------------------------------------------------------------
 @app.route('/api/logs', methods=['GET'])
 @login_required
 def api_logs():
@@ -252,11 +368,15 @@ def api_logs():
 def logs():
     return render_template('logs.html')
 
+#-------------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------
 @socketio.on('connect')
 def handle_connect():
     if 'username' not in session:
         return False
     print("Client connected")
 
+#-------------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------
 if __name__ == "__main__":
-    socketio.run(app, debug=True, host="0.0.0.0", port=5000)
+    socketio.run(app, debug=True, host="0.0.0.0", port=8000)
